@@ -7,6 +7,7 @@ import moviepy.editor as mp
 from openai import OpenAI
 import json
 import fitz
+import time
 from tqdm import tqdm
 
 from utils import *
@@ -21,8 +22,9 @@ class CutPdf:
                             **kwargs):
         
         # Kiểm tra và tạo thư mục "slides" nếu chưa tồn tại
-        if not os.path.exists(output_folder):
-            os.makedirs(output_folder)
+        if os.path.exists(output_folder):
+            shutil.rmtree(output_folder)
+        os.makedirs(output_folder)
         
         # Mở file PDF
         pdf_document = fitz.open(pdf_path)
@@ -64,7 +66,7 @@ class GenContent:
         
         word_per_minute = 270
         if duration_time : 
-            total_word = duration_time * word_per_minute
+            total_word = duration_time * word_per_minute - 30 * number_slides
             word_per_slide = total_word // number_slides
             print("Word_per_slide : ", word_per_slide)
         # Duyệt qua từng slide và sinh ra script cho nó
@@ -113,7 +115,9 @@ class GenContent:
         with open('content.json', 'w', encoding='utf-8') as json_file:
             json.dump(content, json_file, ensure_ascii=False, indent=4)
         print("Save content")
-        return content_str
+        
+        batches_content = split_dict_into_batches(content, 3)
+        return batches_content
             
     def get_slide_script(self,
                          MODEL,
@@ -212,7 +216,7 @@ class Review:
         # Đưa content thành dạng list
         final_content = json.loads(final_content)
         final_content_list = list(final_content.values())
-        with open("final_content.json", 'w', encoding='utf-8') as json_file:
+        with open("final_content.json", 'a', encoding='utf-8') as json_file:
             json.dump(final_content, json_file, ensure_ascii=False, indent=4)
         print("Save final content !")
         return final_content_list
@@ -243,13 +247,13 @@ class Text2Speech:
     def __init__(self, client):
         self.client = client
         
-    def gen_audio(self, content_list : list, audios_path : str, *args, **kwargs):
+    def gen_audio(self, content_list : list, audios_path : str, new_speed : float = None, *args, **kwargs):
         
-        # Tạo lại folder để lưu audio
-        if os.path.exists(audios_path):
-            shutil.rmtree(audios_path)
-        os.makedirs(audios_path)
-        
+        if new_speed : 
+            if new_speed > 1.45 or new_speed < 1.1:
+                new_speed = 1.35
+        else : 
+            new_speed = 1.35
         # Text to speech
         for idx, caption in enumerate(content_list):
             speech_file_path = audios_path + f"/speech_{idx}.mp3"
@@ -257,7 +261,7 @@ class Text2Speech:
             model = "tts-1",
             voice = "nova",
             input = caption,
-            speed = 1.35
+            speed = new_speed
             )
             response.stream_to_file(speech_file_path)
             
@@ -276,49 +280,64 @@ class Slide2Video:
         audio_path = "./audios"
         
         # Cut pdf to slides
-        # CutPdf.split_pdf_to_slides(pdf_path = pdf_path, output_folder = slide_path)
-        if duration_time :
-            content = self.generate_content.content_from_slide(slide_path = slide_path, duration_time = duration_time)
-        else :
-            # Generate content from slides
-            content = self.generate_content.content_from_slide(slide_path = slide_path)
-        content_str = content.split()
-        print(len(content_str))
-        # Review Content
-        content_reviewed = self.review_content.get_review(content = content)
-        combined_string = ''.join(content_reviewed).replace(' ', '')
+        CutPdf.split_pdf_to_slides(pdf_path = pdf_path, output_folder = slide_path)
+        
+        final_content = []
+        batches_content = self.generate_content.content_from_slide(slide_path = slide_path, duration_time = duration_time)
+        for i, batch in enumerate(batches_content):
+            content_str = batch_to_string(batch)
+            # Review Content
+            content_reviewed = self.review_content.get_review(content = content_str)
+            final_content += content_reviewed
 
-        # Đếm số chữ
-        total_word = len(combined_string)
+
+        combined_string = ' '.join(s.strip() for s in final_content)
+        # Đếm số chữ (số ký tự không phải là khoảng trắng)
+        total_word = len(combined_string.split())
         print(total_word)
-        new_speed = duration_time*1.35 /(total_word/270)
-        print(new_speed)
-        # Generate audio from content
-        self.text2speech.gen_audio(content_list = content_reviewed, audios_path = audio_path)
         
-        # Get slide list and audio list
-        slide_list = glob.glob(slide_path + "/*.png")
-        audio_list = glob.glob(audio_path + "/*.mp3")
-        slide_list = sorted(slide_list, key=extract_number)
-        audio_list = sorted(audio_list, key=extract_speech)
+        # Tạo lại folder để lưu audio
+        if os.path.exists(audio_path):
+            shutil.rmtree(audio_path)
+        os.makedirs(audio_path)
         
-        # Create video clips
-        video_clips = []
-        
-        # Start merge
-        for image, audio in zip(slide_list, audio_list):
-            audio_du = MP3(audio)
-            duration = audio_du.info.length
-        
-            img_clip = mp.ImageClip(image).set_duration(duration)
-            audio_clip = mp.AudioFileClip(audio).subclip(0, duration)
-      
-            video_clip = img_clip.set_audio(audio_clip)
-            video_clips.append(video_clip)
+        # Control merge error
+        while True : 
+            try : 
+                if duration_time :
+                    new_speed = (total_word/270)*1.35/duration_time
+                    print(new_speed)
+                    # Generate audio from content
+                    self.text2speech.gen_audio(content_list = final_content, audios_path = audio_path, new_speed = new_speed)
+                else : 
+                    self.text2speech.gen_audio(content_list = final_content, audios_path = audio_path)
+                # Get slide list and audio list
+                slide_list = glob.glob(slide_path + "/*.png")
+                audio_list = glob.glob(audio_path + "/*.mp3")
+                slide_list = sorted(slide_list, key=extract_number)
+                audio_list = sorted(audio_list, key=extract_speech)
+                
+                # Create video clips
+                video_clips = []
+                
+                # Start merge
+                for image, audio in zip(slide_list, audio_list):
+                    audio_du = MP3(audio)
+                    duration = audio_du.info.length
+                
+                    img_clip = mp.ImageClip(image).set_duration(duration)
+                    audio_clip = mp.AudioFileClip(audio).subclip(0, duration)
+            
+                    video_clip = img_clip.set_audio(audio_clip)
+                    video_clips.append(video_clip)
 
-        # Save video
-        final_video = mp.concatenate_videoclips(video_clips)
-        final_video.write_videofile("output_video.mp4", fps=24)
+                # Save video
+                final_video = mp.concatenate_videoclips(video_clips)
+                final_video.write_videofile("output_video.mp4", fps=24)
+                
+                break
+            except :
+                pass
         
 if __name__ == "__main__":
     
@@ -338,6 +357,6 @@ if __name__ == "__main__":
     )
     
     # Start 
-    slide2video.merge(pdf_path = "voice_your_slide_input_demo.pdf", duration_time= 12)
+    slide2video.merge(pdf_path = "voice_your_slide_input_demo.pdf", duration_time= 4)
     
     

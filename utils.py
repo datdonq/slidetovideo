@@ -16,6 +16,21 @@ def extract_speech(filename : str):
     match = re.search(r'speech_(\d+)', filename)
     return int(match.group(1)) if match else 0
 
+def split_dict_into_batches(d, batch_size):
+    # Convert dictionary items to a list of tuples
+    items = list(d.items())
+    # Create an empty list to store the batches
+    batches = []
+    # Loop through the list of items in steps of batch_size
+    for i in range(0, len(items), batch_size):
+        # Create a batch from the current slice of items
+        batch = dict(items[i:i + batch_size])
+        # Append the batch to the list of batches
+        batches.append(batch)
+    return batches
+def batch_to_string(batch):
+    return '\n'.join([f"{key}: {value}" for key, value in batch.items()])
+
 # Prompt of generate content from slide
 def gen_content_system_prompt(number_slides :int, slide_id : int):
     system_prompt = f"""
@@ -32,6 +47,7 @@ def gen_content_system_prompt(number_slides :int, slide_id : int):
     - [QUAN TRỌNG + BẮT BUỘC] Tuyệt đối không được bịa ra thêm hoặc suy đoán nội dung các slide phía sau.
     - Ở câu cuối cùng không được giới thiệu nội dung của những slide tiếp theo
     - Với slide đầu tiên, đây chỉ là slide giới thiệu cơ bản, bạn chỉ cần giới thiệu tên và mục đích của buổi thuyết trình, không cần diễn giải thêm
+    - Với những slide chỉ có một dòng chữ dùng để giới thiệu, bạn chỉ cần giới thiệu nội dung và tuyệt đối không diễn giải thêm
     [BONUS]:
     Một content slide tốt thì bao gồm có
     - Overview về slide 
@@ -122,14 +138,15 @@ def review_content_prompt(content_str : str):
         Với những thuật ngữ chuyên ngành khó tiếp cận với mọi người, bạn có thể diễn giải nó lại sao cho bất cứ ai cũng có thể hiểu được
         Về phần nội dung, bạn có thể sửa lại câu từ, cách truyền đạt để bài văn không bị khô khan và khó hiểu. 
         Với những thuật ngữ mà bạn nghĩ người nghe sẽ không hiểu, bạn sẽ thêm vào các ví dụ cụ thể và giải thích ví dụ đó 
+        Để tránh lặp từ, bạn thường thay thế những danh từ riêng xuất hiện trong bài văn bằng các đại từ như : công cụ này, công ty này, nền tảng này, sản phẩm này ,... khi danh từ riêng đó đã được đề cập trong câu trước đó 
         """
     user_prompt = f"""
         Đây là nội dung của bài thuyết trình của tôi  : 
         {content_str}
         Với nội dung của bài thuyết trình mà tôi cung cấp, tôi muốn bạn hãy viết lại nội dung của mỗi slide sao cho : 
         + Nội dung của các slide phải được liên kết mạch lạc và chặt chẽ với nhau bằng các câu ở đầu mỗi nội dung của slide, đặc biệt các câu đầu mỗi nội dung của các slide không được lặp lại cấu trúc
-        + Bên cạnh nội dung chính của slide, hãy viết thêm các nội dung mà bạn nghĩ có thể giúp bài thuyết trình trở nên thú vị hơn
         + Hãy thay thế các danh từ riêng như tên công ty, sản phẩm, nền tảng,... bằng các đại từ như : công cụ này, sản phẩm này, công ty này, nền tảng này,...khi danh từ riêng đó đã được đề cập ở câu trước nhưng không được lạm dụng việc này
+        + Bên cạnh nội dung chính của slide, hãy viết thêm các nội dung mà bạn nghĩ có thể giúp bài thuyết trình trở nên thú vị hơn
         + Tôi muốn câu hook dẫn vào slide phải thật thú vị, phải làm cho người nghe có thể chú ý tới
         Ví dụ về câu hook dẫn vào một slide nói về mạng xã hội : Khoảng cách thế hệ không thể ngăn cản được bước tiến của công nghệ, đối với giới trẻ hiện nay chúng ta cần một mạng xã hội mới để đáp ứng được nhu cầu của chúng và đó là cách mà Twitter ra đời
         Lưu ý : Số slide bạn trả về phải bằng đúng số slide input của tôi

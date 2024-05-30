@@ -780,6 +780,9 @@ slides/*
 *.json
 *.pdf
 *.mp4
+*.mp3
+*.png
 test.py
+test2.py
 llm.py
 merge.py
